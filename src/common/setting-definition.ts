@@ -169,11 +169,6 @@ export interface QuickCaptureSettings {
 	appendToFile: "append" | "prepend" | "replace";
 }
 
-/** Define the structure for task gutter settings */
-export interface TaskGutterSettings {
-	enableTaskGutter: boolean;
-}
-
 /** Define the structure for workflow stage */
 
 // Interface for workflow definition
@@ -303,9 +298,6 @@ export interface TaskProgressBarSettings {
 	// Completed Task Mover Settings
 	completedTaskMover: CompletedTaskMoverSettings;
 
-	// Task Gutter Settings
-	taskGutter: TaskGutterSettings;
-
 	// Quick Capture Settings
 	quickCapture: QuickCaptureSettings;
 
@@ -417,11 +409,6 @@ export const DEFAULT_SETTINGS: TaskProgressBarSettings = {
 	taskFilter: {
 		enableTaskFilter: true,
 		presetTaskFilters: [], // Start empty, maybe add defaults later or via a reset button
-	},
-
-	// Task Gutter Defaults
-	taskGutter: {
-		enableTaskGutter: false,
 	},
 
 	// Completed Task Mover Defaults

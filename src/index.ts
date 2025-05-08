@@ -70,7 +70,6 @@ import { RewardManager } from "./utils/RewardManager";
 import { HabitManager } from "./utils/HabitManager";
 import { monitorTaskCompletedExtension } from "./editor-ext/monitorTaskCompleted";
 import { sortTasksInDocument } from "./commands/sortTaskCommands";
-import { taskGutterExtension } from "./editor-ext/TaskGutterHandler";
 
 class TaskProgressBarPopover extends HoverPopover {
 	plugin: TaskProgressBarPlugin;
@@ -676,8 +675,6 @@ export default class TaskProgressBarPlugin extends Plugin {
 		this.registerEditorExtension([
 			taskProgressBarExtension(this.app, this),
 		]);
-		this.settings.taskGutter.enableTaskGutter &&
-			this.registerEditorExtension([taskGutterExtension(this.app, this)]);
 		this.settings.enableTaskStatusSwitcher &&
 			this.settings.enableCustomTaskMarks &&
 			this.registerEditorExtension([

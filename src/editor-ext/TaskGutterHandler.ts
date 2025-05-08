@@ -1,119 +1,92 @@
 /**
- * Task Gutter Handler - Handles interaction for task markers in the gutter.
- * Displays a marker in front of task lines; clicking it shows task details.
+ * Task Gutter Handler - 任务标记行交互处理器
+ * 在任务行前显示标记，点击后弹出任务详情
  */
 
-import { EditorView } from "@codemirror/view";
-import { gutter, GutterMarker } from "./patchedGutter";
-import { Extension } from "@codemirror/state";
 import {
-	App,
-	Modal,
-	Menu,
-	Platform,
-	MenuItem,
-	ExtraButtonComponent,
-} from "obsidian";
+	EditorView,
+	gutter,
+	GutterMarker,
+	Decoration,
+	WidgetType,
+} from "@codemirror/view";
+import {
+	StateField,
+	StateEffect,
+	RangeSet,
+	Extension,
+} from "@codemirror/state";
+import { RegExpCursor } from "./regexp-cursor";
+import { App, Modal, Menu, Platform, MenuItem } from "obsidian";
 import { Task } from "../utils/types/TaskIndex";
 import TaskProgressBarPlugin from "../index";
 import { TaskDetailsModal } from "../components/task-edit/TaskDetailsModal";
 import { TaskDetailsPopover } from "../components/task-edit/TaskDetailsPopover";
 import { TaskParser } from "../utils/import/TaskParser";
-// @ts-ignore - This import is necessary but TypeScript can't find it
-import { syntaxTree, tokenClassNodeProp } from "@codemirror/language";
-import "../styles/task-gutter.css";
 
-const taskRegex = /^(([\s>]*)?(-|\d+\.|\*|\+)\s\[(.)\])\s+(.*)$/m;
-
-// Task icon marker
-class TaskGutterMarker extends GutterMarker {
-	text: string;
-	lineNum: number;
-	view: EditorView;
-	app: App;
-	plugin: TaskProgressBarPlugin;
-
-	constructor(
-		text: string,
-		lineNum: number,
-		view: EditorView,
-		app: App,
-		plugin: TaskProgressBarPlugin
-	) {
-		super();
-		this.text = text;
-		this.lineNum = lineNum;
-		this.view = view;
-		this.app = app;
-		this.plugin = plugin;
-	}
-
-	toDOM() {
-		const markerEl = createEl("div");
-		const button = new ExtraButtonComponent(markerEl)
-			.setIcon("calendar-check")
-			.onClick(() => {
-				const lineText = this.view.state.doc.line(this.lineNum).text;
-				const file = this.app.workspace.getActiveFile();
-
-				if (!file || !taskRegex.test(lineText)) return false;
-
-				// Check if the line is in a codeblock or frontmatter
-				const line = this.view.state.doc.line(this.lineNum);
-				const syntaxNode = syntaxTree(this.view.state).resolveInner(
-					line.from + 1
-				);
-				const nodeProps = syntaxNode.type.prop(tokenClassNodeProp);
-
-				if (nodeProps) {
-					const props = nodeProps.split(" ");
-					if (
-						props.includes("hmd-codeblock") ||
-						props.includes("hmd-frontmatter")
-					) {
-						return false;
-					}
-				}
-
-				const lineNum = this.view.state.doc.line(this.lineNum).number;
-				const task = getTaskFromLine(
-					this.plugin,
-					file.path,
-					lineText,
-					lineNum
-				);
-
-				if (task) {
-					showTaskDetails(
-						this.view,
-						this.app,
-						this.plugin,
-						task,
-						button.extraSettingsEl
-					);
-					return true;
-				}
-
-				return false;
-			});
-
-		button.extraSettingsEl.toggleClass("task-gutter-marker", true);
-		return button.extraSettingsEl;
+// 扩展TaskProgressBarPlugin类型
+declare module "../index" {
+	interface TaskProgressBarPlugin {
+		taskManager?: {
+			updateTask(task: Task): Promise<void>;
+		};
 	}
 }
 
+// 任务行标记效果
+const taskMarkerEffect = StateEffect.define<{ pos: number; on: boolean }>({
+	map: (val, mapping) => ({ pos: mapping.mapPos(val.pos), on: val.on }),
+});
+
+// 任务标记状态字段
+const taskMarkerState = StateField.define<RangeSet<GutterMarker>>({
+	create() {
+		return RangeSet.empty;
+	},
+	update(set, transaction) {
+		set = set.map(transaction.changes);
+		for (let e of transaction.effects) {
+			if (e.is(taskMarkerEffect)) {
+				if (e.value.on)
+					set = set.update({ add: [taskMarker.range(e.value.pos)] });
+				else
+					set = set.update({ filter: (from) => from != e.value.pos });
+			}
+		}
+		return set;
+	},
+});
+
+// 任务图标标记
+class TaskGutterMarker extends GutterMarker {
+	constructor() {
+		super();
+	}
+
+	toDOM() {
+		const markerEl = document.createElement("div");
+		markerEl.className = "task-gutter-marker";
+		markerEl.innerHTML = "🔍";
+		markerEl.title = "查看/编辑任务";
+		return markerEl;
+	}
+}
+
+// 创建任务标记实例
+const taskMarker = new TaskGutterMarker();
+
 /**
- * Shows task details.
- * Decides whether to show a Popover or a Modal based on the platform type.
+ * 显示任务详情
+ * 根据平台类型决定显示Popover还是Modal
  */
 const showTaskDetails = (
 	view: EditorView,
 	app: App,
 	plugin: TaskProgressBarPlugin,
 	task: Task,
-	extraSettingsEl: HTMLElement
+	event: MouseEvent
 ) => {
-	// Task update callback function
+	// 任务更新回调函数
 	const onTaskUpdated = async (updatedTask: Task) => {
 		if (plugin.taskManager) {
 			await plugin.taskManager.updateTask(updatedTask);
@@ -121,25 +94,26 @@ const showTaskDetails = (
 	};
 
 	if (Platform.isDesktop) {
-		// Desktop environment - show Popover
-		const popover = new TaskDetailsPopover(app, plugin, task);
-		const rect = extraSettingsEl.getBoundingClientRect();
-		popover.showAtPosition({
-			x: rect.left,
-			y: rect.bottom + 10,
-		});
+		// 桌面环境 - 显示Popover
+		const popover = new TaskDetailsPopover(
+			app,
+			plugin,
+			task,
+			onTaskUpdated
+		);
+		popover.showAtPosition({ x: event.clientX, y: event.clientY });
 	} else {
-		// Mobile environment - show Modal
+		// 移动环境 - 显示Modal
 		const modal = new TaskDetailsModal(app, plugin, task, onTaskUpdated);
 		modal.open();
 	}
 };
 
-// Task parser instance
+// 任务解析器实例
 let taskParser: TaskParser | null = null;
 
 /**
- * Parses a task from the line content.
+ * 从行内容解析任务
  */
 const getTaskFromLine = (
 	plugin: TaskProgressBarPlugin,
@@ -147,7 +121,7 @@ const getTaskFromLine = (
 	line: string,
 	lineNum: number
 ): Task | null => {
-	// Lazily load the task parser
+	// 懒加载任务解析器
 	if (!taskParser) {
 		taskParser = new TaskParser();
 	}
@@ -161,47 +135,137 @@ const getTaskFromLine = (
 };
 
 /**
- * Task Gutter Extension
+ * 任务Gutter扩展
  */
 export function taskGutterExtension(
 	app: App,
 	plugin: TaskProgressBarPlugin
 ): Extension {
-	// Create a regular expression to identify task lines
+	// 创建任务行识别正则表达式
+	const taskRegex = /^(([\s>]*)?(-|\d+\.|\*|\+)\s\[(.)\])\s*(.*)$/m;
 
 	return [
+		taskMarkerState,
 		gutter({
 			class: "task-gutter",
-			lineMarker(view, line) {
-				const lineText = view.state.doc.lineAt(line.from).text;
-				const lineNumber = view.state.doc.lineAt(line.from).number;
+			markers: (view) => view.state.field(taskMarkerState),
+			initialSpacer: () => taskMarker,
+			domEventHandlers: {
+				mousedown(view, line, event) {
+					// 确保事件是MouseEvent类型
+					if (!(event instanceof MouseEvent)) return false;
 
-				// Skip if not a task
-				if (!taskRegex.test(lineText)) return null;
+					const lineText = view.state.doc.lineAt(line.from).text;
+					const file = app.workspace.getActiveFile();
 
-				// Check if the line is in a codeblock or frontmatter
-				const syntaxNode = syntaxTree(view.state).resolveInner(
-					line.from + 1
-				);
-				const nodeProps = syntaxNode.type.prop(tokenClassNodeProp);
+					if (!file || !taskRegex.test(lineText)) return false;
 
-				if (nodeProps) {
-					const props = nodeProps.split(" ");
-					if (
-						props.includes("hmd-codeblock") ||
-						props.includes("hmd-frontmatter")
-					) {
-						return null;
+					const lineNum = view.state.doc.lineAt(line.from).number - 1;
+					const task = getTaskFromLine(
+						plugin,
+						file.path,
+						lineText,
+						lineNum
+					);
+
+					if (task) {
+						showTaskDetails(view, app, plugin, task, event);
+						return true;
 					}
+
+					return false;
+				},
+			},
+		}),
+
+		EditorView.updateListener.of((update) => {
+			if (!update.docChanged && !update.viewportChanged) return;
+
+			const file = app.workspace.getActiveFile();
+			if (!file) return;
+
+			// 清除现有标记
+			let effects: StateEffect<unknown>[] = [];
+
+			// 遍历可见行，为任务行添加标记
+			const { state, viewport } = update.view;
+			let pos = viewport.from;
+
+			while (pos <= viewport.to) {
+				const line = state.doc.lineAt(pos);
+				const lineText = line.text;
+
+				if (taskRegex.test(lineText)) {
+					effects.push(
+						taskMarkerEffect.of({ pos: line.from, on: true })
+					);
 				}
 
-				return new TaskGutterMarker(
-					lineText,
-					lineNumber,
-					view,
-					app,
-					plugin
-				);
+				pos = line.to + 1;
+			}
+
+			if (effects.length > 0) {
+				update.view.dispatch({ effects });
+			}
+		}),
+
+		EditorView.baseTheme({
+			".task-gutter": {
+				width: "20px",
+			},
+			".task-gutter-marker": {
+				cursor: "pointer",
+				fontSize: "14px",
+				opacity: "0.6",
+				transition: "opacity 0.2s ease",
+			},
+			".task-gutter-marker:hover": {
+				opacity: "1",
+			},
+			".task-popover-content": {
+				padding: "8px",
+				maxWidth: "300px",
+				maxHeight: "400px",
+				overflow: "auto",
+			},
+			".task-metadata-editor": {
+				display: "flex",
+				flexDirection: "column",
+				gap: "8px",
+				padding: "4px",
+			},
+			".task-content-preview": {
+				fontSize: "0.9em",
+				padding: "4px",
+				borderBottom: "1px solid var(--background-modifier-border)",
+				marginBottom: "8px",
+				whiteSpace: "nowrap",
+				overflow: "hidden",
+				textOverflow: "ellipsis",
+				maxWidth: "280px",
+			},
+			".field-container": {
+				display: "flex",
+				flexDirection: "column",
+				marginBottom: "4px",
+			},
+			".field-label": {
+				fontSize: "0.8em",
+				fontWeight: "bold",
+				marginBottom: "2px",
+				color: "var(--text-muted)",
+			},
+			".action-buttons": {
+				display: "flex",
+				justifyContent: "space-between",
+				marginTop: "8px",
+				gap: "8px",
+			},
+			".action-button": {
+				padding: "4px 8px",
+				fontSize: "0.8em",
+				borderRadius: "4px",
+				cursor: "pointer",
 			},
 		}),
 	];
